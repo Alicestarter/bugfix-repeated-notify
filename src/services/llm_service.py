@@ -14,6 +14,7 @@ async def send_with_agent(plugin_instance, message: str, data: dict, event_type:
             "push": "代码推送",
             "issues": "问题",
             "pull_request": "拉取请求",
+            "repository": "仓库",
         }.get(event_type, event_type)
 
         # 构建 LLM 输入信息 - 优化结构，确保 GitHub 事件内容优先级最高
@@ -26,7 +27,7 @@ async def send_with_agent(plugin_instance, message: str, data: dict, event_type:
 1. 消息要简洁明了
 2. 可以使用 emoji 增加趣味性
 3. 保留关键信息（作者、仓库、标题、URL等）
-4. 如果有链接（commit URL、issue URL、PR URL），必须保留
+4. 如果有链接（commit URL、issue URL、PR URL、仓库 URL），必须保留
 5. 使用友好、生动的语气
 
 请直接输出最终的消息内容，不要有多余的解释。

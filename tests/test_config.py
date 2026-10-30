@@ -16,6 +16,7 @@ def test_config_default_values():
         "llm_provider_id": "",
         "agent_timeout": 60,
         "agent_system_prompt": "",
+        "github_token": "",
     }
     plugin_config = PluginConfig(config_data)
 
@@ -37,6 +38,7 @@ def test_config_with_custom_values():
         "llm_provider_id": "test_provider",
         "agent_timeout": 90,
         "agent_system_prompt": "Custom prompt",
+        "github_token": "ghp_test",
     }
     plugin_config = PluginConfig(config_data)
 
@@ -44,3 +46,4 @@ def test_config_with_custom_values():
     assert plugin_config.target_umo == "test:GroupMessage:123456"
     assert plugin_config.webhook_secret == "test_secret"
     assert plugin_config.enable_agent == True
+

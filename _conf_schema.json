@@ -64,5 +64,11 @@
     "type": "text",
     "default": "",
     "hint": "为 LLM 添加自定义的系统提示词，可以定义消息的风格、语气等。留空则使用默认提示词。"
+  },
+  "github_token": {
+    "description": "GitHub Token（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "用于 github_forks 查询指令的 GitHub API Token。留空使用未认证请求（每小时 60 次配额），配置后提升至每小时 5000 次。"
   }
 }
