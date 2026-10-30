@@ -19,6 +19,7 @@ def make_event(
     action: str,
     labels: list[str] | None = None,
     issue_type: str | None = None,
+    assignees: list[str] | None = None,
     fields: list[dict] | None = None,
     extra: dict | None = None,
 ) -> dict:
@@ -30,6 +31,8 @@ def make_event(
         "type": {"name": issue_type} if issue_type else None,
         "issue_field_values": fields or [],
     }
+    if assignees is not None:
+        issue["assignees"] = [{"login": login} for login in assignees]
     data = {
         "action": action,
         "issue": issue,
@@ -113,6 +116,56 @@ def test_refresh_snapshot_removes_field():
     assert snapshot.fields == {}
 
 
+def test_snapshot_extracts_assignees():
+    data = make_event("opened", assignees=["alice", "bob"])
+
+    snapshot = snapshot_from_event(data)
+
+    assert snapshot.assignees == ["alice", "bob"]
+
+
+def test_refresh_snapshot_merges_assigned_event():
+    snapshot = IssueSnapshot(repo_name="acme/repo", issue_number=42)
+    data = {
+        "action": "assigned",
+        "issue": {},
+        "repository": {"full_name": "acme/repo"},
+        "sender": {"login": "carol"},
+        "assignee": {"login": "alice"},
+    }
+
+    _refresh_snapshot(snapshot, data)
+
+    assert snapshot.assignees == ["alice"]
+
+
+def test_refresh_snapshot_removes_unassigned():
+    snapshot = IssueSnapshot(
+        repo_name="acme/repo",
+        issue_number=42,
+        assignees=["alice"],
+    )
+    data = make_event("unassigned", extra={"assignee": {"login": "alice"}})
+
+    _refresh_snapshot(snapshot, data)
+
+    assert snapshot.assignees == []
+
+
+def test_creation_message_includes_assignees():
+    message = format_issue_message(
+        action="opened",
+        author_name="alice",
+        repo_name="acme/repo",
+        issue_number=42,
+        title="Bug report",
+        issue_url="https://github.com/acme/repo/issues/42",
+        assignees=["alice", "bob"],
+    )
+
+    assert "👥 Assigned: alice, bob" in message
+
+
 def test_creation_message_includes_metadata():
     message = format_issue_message(
         action="opened",
@@ -165,6 +218,16 @@ def test_creation_burst_is_merged_into_one_message():
         assert (
             await notifier.handle(
                 make_event(
+                    "assigned",
+                    labels=["bug", "priority:high"],
+                    extra={"assignee": {"login": "alice"}},
+                )
+            )
+            is None
+        )
+        assert (
+            await notifier.handle(
+                make_event(
                     "field_added",
                     labels=["bug", "priority:high"],
                     fields=[
@@ -193,39 +256,128 @@ def test_creation_burst_is_merged_into_one_message():
     assert event_type == "issues"
     assert "opened issue" in message
     assert "Labels: bug, priority:high" in message
+    assert "Assigned: alice" in message
     assert "Due date: 2026-11-01" in message
 
 
-def test_standalone_attribute_change_suppressed_by_default():
+def test_attribute_only_burst_suppressed_by_default():
     async def scenario():
-        notifier = IssueNotifier(FakePlugin(notify_issue_updates=False))
-        return await notifier.handle(
-            make_event("labeled", labels=["bug"], extra={"label": {"name": "bug"}})
+        plugin = FakePlugin(notify_issue_updates=False)
+        notifier = IssueNotifier(plugin, quiet_seconds=0.02, max_wait_seconds=0.2)
+        assert (
+            await notifier.handle(
+                make_event("labeled", labels=["bug"], extra={"label": {"name": "bug"}})
+            )
+            is None
         )
+        await asyncio.sleep(0.1)
+        return plugin.sent
 
-    assert asyncio.run(scenario()) is None
+    assert asyncio.run(scenario()) == []
 
 
 def test_standalone_attribute_change_notified_when_enabled():
     async def scenario():
-        notifier = IssueNotifier(FakePlugin(notify_issue_updates=True))
-        return await notifier.handle(
-            make_event("labeled", labels=["bug"], extra={"label": {"name": "bug"}})
+        plugin = FakePlugin(notify_issue_updates=True)
+        notifier = IssueNotifier(plugin, quiet_seconds=0.02, max_wait_seconds=0.2)
+        assert (
+            await notifier.handle(
+                make_event("labeled", labels=["bug"], extra={"label": {"name": "bug"}})
+            )
+            is None
         )
+        await asyncio.sleep(0.1)
+        return plugin.sent
 
-    message = asyncio.run(scenario())
+    sent = asyncio.run(scenario())
 
-    assert message is not None
+    assert len(sent) == 1
+    message, _ = sent[0]
     assert "added label" in message
-    assert "🔖 Label: bug" in message
+    assert "🔖 Label added: bug" in message
 
 
-def test_non_attribute_action_is_forwarded_immediately():
+def test_standalone_assigned_notified_when_enabled():
     async def scenario():
-        notifier = IssueNotifier(FakePlugin(notify_issue_updates=False))
-        return await notifier.handle(make_event("closed"))
+        plugin = FakePlugin(notify_issue_updates=True)
+        notifier = IssueNotifier(plugin, quiet_seconds=0.02, max_wait_seconds=0.2)
+        assert (
+            await notifier.handle(
+                make_event("assigned", extra={"assignee": {"login": "alice"}})
+            )
+            is None
+        )
+        await asyncio.sleep(0.1)
+        return plugin.sent
 
-    message = asyncio.run(scenario())
+    sent = asyncio.run(scenario())
 
-    assert message is not None
+    assert len(sent) == 1
+    message, _ = sent[0]
+    assert "assigned issue" in message
+    assert "🔖 Assignee: alice" in message
+
+
+def test_non_attribute_action_notified_after_quiet_window():
+    async def scenario():
+        plugin = FakePlugin(notify_issue_updates=False)
+        notifier = IssueNotifier(plugin, quiet_seconds=0.02, max_wait_seconds=0.2)
+        assert await notifier.handle(make_event("closed")) is None
+        await asyncio.sleep(0.1)
+        return plugin.sent
+
+    sent = asyncio.run(scenario())
+
+    assert len(sent) == 1
+    message, _ = sent[0]
     assert "closed issue" in message
+
+
+def test_multiple_attribute_actions_merged_into_one_update():
+    async def scenario():
+        plugin = FakePlugin(notify_issue_updates=True)
+        notifier = IssueNotifier(plugin, quiet_seconds=0.02, max_wait_seconds=0.2)
+        assert (
+            await notifier.handle(
+                make_event("labeled", labels=["bug"], extra={"label": {"name": "bug"}})
+            )
+            is None
+        )
+        assert (
+            await notifier.handle(
+                make_event("assigned", extra={"assignee": {"login": "alice"}})
+            )
+            is None
+        )
+        await asyncio.sleep(0.1)
+        return plugin.sent
+
+    sent = asyncio.run(scenario())
+
+    assert len(sent) == 1
+    message, _ = sent[0]
+    assert "GitHub Issue Updated" in message
+    assert "🔹 Label added: bug" in message
+    assert "🔹 Assignee: alice" in message
+
+
+def test_mixed_actions_merged_even_when_updates_disabled():
+    async def scenario():
+        plugin = FakePlugin(notify_issue_updates=False)
+        notifier = IssueNotifier(plugin, quiet_seconds=0.02, max_wait_seconds=0.2)
+        assert (
+            await notifier.handle(
+                make_event("labeled", labels=["bug"], extra={"label": {"name": "bug"}})
+            )
+            is None
+        )
+        assert await notifier.handle(make_event("closed")) is None
+        await asyncio.sleep(0.1)
+        return plugin.sent
+
+    sent = asyncio.run(scenario())
+
+    assert len(sent) == 1
+    message, _ = sent[0]
+    assert "🔹 closed" in message
+    assert "🔹 Label added: bug" in message

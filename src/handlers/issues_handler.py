@@ -20,6 +20,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ..formatters.issues_formatter import (
+    format_issue_burst_message,
     format_issue_message,
     format_issue_update_message,
 )
@@ -36,6 +37,8 @@ ATTRIBUTE_ACTIONS = frozenset(
         "untyped",
         "field_added",
         "field_removed",
+        "assigned",
+        "unassigned",
     }
 )
 
@@ -56,15 +59,21 @@ class IssueSnapshot:
     author_name: str = "Unknown"
     labels: list[str] = field(default_factory=list)
     issue_type: str | None = None
+    assignees: list[str] = field(default_factory=list)
     fields: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
-class _PendingCreation:
+class _PendingIssue:
+    """A burst of issue events waiting to be sent as one notification."""
+
     snapshot: IssueSnapshot
     data: dict[str, Any]
+    actor_name: str
     first_seen: float
     last_seen: float
+    actions: list[str] = field(default_factory=list)
+    details: list[tuple[str, str]] = field(default_factory=list)
     task: asyncio.Task | None = None
 
 
@@ -83,6 +92,20 @@ def _extract_label_names(issue: dict[str, Any]) -> list[str]:
         name = _label_name(label)
         if name and name not in names:
             names.append(name)
+    return names
+
+
+def _extract_assignee_names(issue: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for assignee in issue.get("assignees") or []:
+        login = assignee.get("login") if isinstance(assignee, dict) else assignee
+        if login and str(login) not in names:
+            names.append(str(login))
+    if not names:
+        assignee = issue.get("assignee")
+        login = assignee.get("login") if isinstance(assignee, dict) else assignee
+        if login:
+            names.append(str(login))
     return names
 
 
@@ -152,6 +175,7 @@ def snapshot_from_event(data: dict[str, Any]) -> IssueSnapshot:
         author_name=sender.get("login", "Unknown"),
         labels=_extract_label_names(issue),
         issue_type=_extract_type_name(issue.get("type")),
+        assignees=_extract_assignee_names(issue),
         fields=_extract_field_values(issue),
     )
 
@@ -169,6 +193,8 @@ def _refresh_snapshot(snapshot: IssueSnapshot, data: dict[str, Any]) -> None:
             snapshot.labels = _extract_label_names(issue)
         if "type" in issue:
             snapshot.issue_type = _extract_type_name(issue.get("type"))
+        if "assignees" in issue or "assignee" in issue:
+            snapshot.assignees = _extract_assignee_names(issue)
         if "issue_field_values" in issue:
             snapshot.fields = _extract_field_values(issue)
 
@@ -185,6 +211,15 @@ def _refresh_snapshot(snapshot: IssueSnapshot, data: dict[str, Any]) -> None:
             snapshot.issue_type = None
         else:
             snapshot.issue_type = _extract_type_name(data.get("type")) or snapshot.issue_type
+    elif action in {"assigned", "unassigned"}:
+        assignee = data.get("assignee") or {}
+        login = assignee.get("login") if isinstance(assignee, dict) else assignee
+        if login:
+            login = str(login)
+            if action == "assigned" and login not in snapshot.assignees:
+                snapshot.assignees.append(login)
+            elif action == "unassigned" and login in snapshot.assignees:
+                snapshot.assignees.remove(login)
     elif action == "field_added":
         field_obj = data.get("issue_field") or {}
         name = _field_name(field_obj) or _field_name(data.get("issue_field_value"))
@@ -205,16 +240,41 @@ def _issue_key(data: dict[str, Any]) -> str:
     return f"{repo_name}#{issue.get('number', 0)}"
 
 
+_OTHER_ACTION_TEXT = {
+    "closed": "closed",
+    "reopened": "reopened",
+    "edited": "edited",
+    "deleted": "deleted",
+    "locked": "locked",
+    "unlocked": "unlocked",
+    "pinned": "pinned",
+    "unpinned": "unpinned",
+    "milestoned": "milestoned",
+    "demilestoned": "demilestoned",
+    "transferred": "transferred",
+}
+
+
 def _update_detail(action: str, data: dict[str, Any]) -> str | None:
-    """Short description for a post-creation attribute change notification."""
+    """Short description for a queued issue action."""
+    if action in _OTHER_ACTION_TEXT:
+        return _OTHER_ACTION_TEXT[action]
     if action in {"labeled", "unlabeled"}:
         name = _label_name(data.get("label"))
-        return f"Label: {name}" if name else None
+        if not name:
+            return None
+        return f"Label added: {name}" if action == "labeled" else f"Label removed: {name}"
     if action == "typed":
         name = _extract_type_name(data.get("type"))
         return f"Type: {name}" if name else None
     if action == "untyped":
         return "Type cleared"
+    if action in {"assigned", "unassigned"}:
+        assignee = data.get("assignee") or {}
+        login = assignee.get("login") if isinstance(assignee, dict) else assignee
+        if not login:
+            return None
+        return f"Assignee: {login}" if action == "assigned" else f"Assignee removed: {login}"
     if action in {"field_added", "field_removed"}:
         name = _field_name(data.get("issue_field")) or _field_name(
             data.get("issue_field_value")
@@ -229,7 +289,7 @@ def _update_detail(action: str, data: dict[str, Any]) -> str | None:
 
 
 class IssueNotifier:
-    """Buffer creation bursts and decide which issue events to forward."""
+    """Coalesce issue event bursts and decide which ones to forward."""
 
     def __init__(
         self,
@@ -240,7 +300,7 @@ class IssueNotifier:
         self._plugin = plugin
         self._quiet_seconds = quiet_seconds
         self._max_wait_seconds = max_wait_seconds
-        self._pending: dict[str, _PendingCreation] = {}
+        self._pending: dict[str, _PendingIssue] = {}
         self._tasks: set[asyncio.Task] = set()
 
     @property
@@ -251,17 +311,18 @@ class IssueNotifier:
         return bool(getattr(self._cfg, "notify_issue_updates", False))
 
     async def handle(self, data: dict[str, Any]) -> str | None:
-        """Return a message to send now, or ``None`` if buffered/suppressed."""
+        """Queue an issue event and return ``None``; a burst flushes as one message."""
         action = data.get("action", "unknown")
-        issue = data.get("issue") or {}
         key = _issue_key(data)
+        now = time.monotonic()
+        actor_name = (data.get("sender") or {}).get("login", "Unknown")
 
-        if action == CREATION_ACTION:
-            self._cancel_pending(key)
-            now = time.monotonic()
-            pending = _PendingCreation(
+        pending = self._pending.get(key)
+        if pending is None:
+            pending = _PendingIssue(
                 snapshot=snapshot_from_event(data),
                 data=data,
+                actor_name=actor_name,
                 first_seen=now,
                 last_seen=now,
             )
@@ -270,48 +331,26 @@ class IssueNotifier:
             pending.task = task
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
-            logger.info(
-                f"GitHub Webhook: Buffering issue creation notification for {key}"
-            )
-            return None
+            logger.info(f"GitHub Webhook: Buffering '{action}' event for {key}")
+        else:
+            _refresh_snapshot(pending.snapshot, data)
+            pending.data = data
+            pending.actor_name = actor_name
+            pending.last_seen = now
+            logger.info(f"GitHub Webhook: Merged '{action}' into pending burst for {key}")
 
-        if action in ATTRIBUTE_ACTIONS:
-            pending = self._pending.get(key)
-            if pending is not None:
-                _refresh_snapshot(pending.snapshot, data)
-                pending.last_seen = time.monotonic()
-                logger.info(
-                    f"GitHub Webhook: Merged '{action}' into pending creation for {key}"
-                )
-                return None
+        if action not in pending.actions:
+            pending.actions.append(action)
+        detail = _update_detail(action, data)
+        if detail and (action, detail) not in pending.details:
+            pending.details.append((action, detail))
+        return None
 
-            if self._notify_updates():
-                return format_issue_update_message(
-                    action=action,
-                    author_name=(data.get("sender") or {}).get("login", "Unknown"),
-                    repo_name=(data.get("repository") or {}).get(
-                        "full_name", "Unknown"
-                    ),
-                    issue_number=issue.get("number", 0),
-                    title=issue.get("title", "No title"),
-                    issue_url=issue.get("html_url", ""),
-                    detail=_update_detail(action, data),
-                )
-
-            logger.info(
-                f"GitHub Webhook: Suppressed standalone '{action}' event for {key} "
-                "(notify_issue_updates disabled)"
-            )
-            return None
-
-        return format_issue_message(
-            action=action,
-            author_name=(data.get("sender") or {}).get("login", "Unknown"),
-            repo_name=(data.get("repository") or {}).get("full_name", "Unknown"),
-            issue_number=issue.get("number", 0),
-            title=issue.get("title", "No title"),
-            issue_url=issue.get("html_url", ""),
-        )
+    def _should_notify(self, pending: _PendingIssue) -> bool:
+        """Attribute-only bursts follow the config; anything else always notifies."""
+        if any(action not in ATTRIBUTE_ACTIONS for action in pending.actions):
+            return True
+        return self._notify_updates()
 
     def _cancel_pending(self, key: str) -> None:
         pending = self._pending.pop(key, None)
@@ -337,7 +376,7 @@ class IssueNotifier:
 
                 self._pending.pop(key, None)
                 try:
-                    await self._send_creation(pending)
+                    await self._flush(pending)
                 except Exception as e:
                     logger.error(
                         f"GitHub Webhook: Failed to send merged issue notification: {e}",
@@ -347,8 +386,68 @@ class IssueNotifier:
         except asyncio.CancelledError:
             raise
 
-    async def _send_creation(self, pending: _PendingCreation) -> None:
+    async def _flush(self, pending: _PendingIssue) -> None:
         snapshot = pending.snapshot
+        if not self._should_notify(pending):
+            logger.info(
+                f"GitHub Webhook: Suppressed attribute-only burst for "
+                f"{snapshot.repo_name}#{snapshot.issue_number} "
+                "(notify_issue_updates disabled)"
+            )
+            return
+        if CREATION_ACTION in pending.actions:
+            await self._send_creation(pending)
+        else:
+            await self._send_update(pending)
+
+    async def _send_update(self, pending: _PendingIssue) -> None:
+        snapshot = pending.snapshot
+        actions = pending.actions
+        details = [detail for _, detail in pending.details]
+
+        if len(actions) == 1 and actions[0] in ATTRIBUTE_ACTIONS:
+            message = format_issue_update_message(
+                action=actions[0],
+                author_name=pending.actor_name,
+                repo_name=snapshot.repo_name,
+                issue_number=snapshot.issue_number,
+                title=snapshot.title,
+                issue_url=snapshot.issue_url,
+                detail=details[0] if details else None,
+            )
+        elif len(actions) == 1:
+            message = format_issue_message(
+                action=actions[0],
+                author_name=pending.actor_name,
+                repo_name=snapshot.repo_name,
+                issue_number=snapshot.issue_number,
+                title=snapshot.title,
+                issue_url=snapshot.issue_url,
+            )
+        else:
+            message = format_issue_burst_message(
+                author_name=pending.actor_name,
+                repo_name=snapshot.repo_name,
+                issue_number=snapshot.issue_number,
+                title=snapshot.title,
+                issue_url=snapshot.issue_url,
+                details=details,
+            )
+
+        logger.info(
+            f"GitHub Webhook: Sending merged issue update notification for "
+            f"{snapshot.repo_name}#{snapshot.issue_number} "
+            f"(actions={', '.join(actions)})"
+        )
+        await self._plugin.dispatch_message(message, pending.data, "issues")
+
+    async def _send_creation(self, pending: _PendingIssue) -> None:
+        snapshot = pending.snapshot
+        extra_details = [
+            detail
+            for action, detail in pending.details
+            if action not in ATTRIBUTE_ACTIONS and action != CREATION_ACTION
+        ]
         message = format_issue_message(
             action=CREATION_ACTION,
             author_name=snapshot.author_name,
@@ -358,13 +457,15 @@ class IssueNotifier:
             issue_url=snapshot.issue_url,
             labels=snapshot.labels,
             issue_type=snapshot.issue_type,
+            assignees=snapshot.assignees,
             fields=snapshot.fields,
+            extra_details=extra_details,
         )
         logger.info(
             f"GitHub Webhook: Sending merged issue creation notification for "
             f"{snapshot.repo_name}#{snapshot.issue_number} "
             f"(labels={len(snapshot.labels)}, type={snapshot.issue_type}, "
-            f"fields={len(snapshot.fields)})"
+            f"assignees={len(snapshot.assignees)}, fields={len(snapshot.fields)})"
         )
         await self._plugin.dispatch_message(message, pending.data, "issues")
 

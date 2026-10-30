@@ -30,7 +30,7 @@ TatsukiMengChen 向 astrbot_plugin_github_webhook 推送了代码
 
 ### Issue 打开
 
-创建 Issue 时，GitHub 会先后发送 `opened`、`labeled`、`typed`、`field_added` 等多个事件。插件会在短暂窗口内合并这些事件，只发送一条创建通知。
+创建 Issue 时，GitHub 会先后发送 `opened`、`labeled`、`typed`、`assigned`、`field_added` 等多个事件。插件会把这些事件合并成一条创建通知。
 
 **默认模板**：
 ```
@@ -39,11 +39,12 @@ TatsukiMengChen 向 astrbot_plugin_github_webhook 推送了代码
 📋 Issue #42: Bug report
 🏷️ Labels: bug, priority:high
 🧩 Type: Bug
+👥 Assigned: alice
 🔖 Due date: 2026-11-01
 📎 https://github.com/owner/repo/issues/42
 ```
 
-> 标签、类型、自定义字段只有在创建时携带才会显示；没有对应内容的行会自动省略。
+> 标签、类型、负责人、自定义字段只有在创建时携带才会显示；没有对应内容的行会自动省略。
 
 **LLM 生成**：
 ```
@@ -51,6 +52,24 @@ TatsukiMengChen 向 astrbot_plugin_github_webhook 推送了代码
 TatsukiMengChen 在 owner/repo 创建了新问题
 
 📋 #42: Bug report
+📎 https://github.com/owner/repo/issues/42
+```
+
+### 事件合并规则
+
+同一 Issue 的 `issues` 事件会在安静窗口（2 秒，最长等待 8 秒）内合并为一条通知：
+
+- 窗口内包含 `opened`：发送一条创建通知，带上标签、类型、负责人和自定义字段
+- 窗口内包含 `closed`、`reopened`、`edited` 等主要动作：无论 `notify_issue_updates` 是否开启都会发送
+- 窗口内只有标签、类型、负责人、字段等属性变更：由 `notify_issue_updates` 决定是否发送
+- 窗口内有多个动作时，会以 `🔹` 列表合并展示：
+
+```
+📝 GitHub Issue Updated
+👤 username updated issue in owner/repo
+📋 Issue #42: Bug report
+🔹 Label added: bug
+🔹 Assignee: alice
 📎 https://github.com/owner/repo/issues/42
 ```
 
@@ -75,13 +94,13 @@ TatsukiMengChen 在 owner/repo 创建了新问题
 
 ### Issue 属性变更
 
-开启 `notify_issue_updates` 后，创建完成后的独立属性变更会单独通知：
+开启 `notify_issue_updates` 后，创建完成后的属性变更（包括指派/取消指派负责人）也会通知；窗口内有多项变更时合并为一条：
 
 ```
 📝 GitHub Issue Updated
 👤 username added label on owner/repo
 📋 Issue #42: Bug report
-🔖 Label: bug
+🔖 Label added: bug
 📎 https://github.com/owner/repo/issues/42
 ```
 
