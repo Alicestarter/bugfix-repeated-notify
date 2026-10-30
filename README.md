@@ -41,6 +41,7 @@ pip install -r requirements.txt
   "target_umo": "platform_id:GroupMessage:群号",
   "webhook_secret": "your_github_webhook_secret",
   "rate_limit": 10,
+  "notify_issue_updates": false,
   "enable_agent": true,
   "llm_provider_id": "",
   "agent_timeout": 60,

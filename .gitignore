@@ -38,3 +38,7 @@ Thumbs.db
 .venv
 venv/
 ENV/
+
+# Runtime artifacts created when AstrBot is imported/started from this directory
+astrbot.lock
+data/

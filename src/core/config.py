@@ -45,6 +45,7 @@ class PluginConfig(ConfigNode):
     target_umo: str
     webhook_secret: str
     rate_limit: int
+    notify_issue_updates: bool
     enable_agent: bool
     llm_provider_id: str
     agent_timeout: int
@@ -63,6 +64,7 @@ class PluginConfig(ConfigNode):
             f"  agent_system_prompt: {len(self.agent_system_prompt) if self.agent_system_prompt else 0} chars"
         )
         logger.info(f"  rate_limit: {self.rate_limit} req/min")
+        logger.info(f"  notify_issue_updates: {self.notify_issue_updates}")
         logger.info("=" * 60)
 
         if not self.target_umo:

@@ -51,6 +51,18 @@ GitHub Webhook 密钥，用于验证请求来源。
 - 建议设置为 `10-30` 防止消息轰炸
 - 当超过限制时，插件会返回 HTTP 429 错误
 
+### notify_issue_updates
+
+**类型**: `bool` | **默认值**: `false`
+
+是否通知创建完成后的 Issue 属性变更。
+
+**行为说明**：
+- 创建 Issue 时伴随的标签（`labeled`）、类型（`typed`）、自定义字段（`field_added`）事件会与 `opened` 合并，只发送一条创建通知
+- `false`（默认）：创建完成后的独立属性变更不发送通知
+- `true`：创建完成后的标签、类型、字段变更会单独发送一条通知
+- 不影响 `closed`、`reopened`、`edited` 等主要动作的通知
+
 ## LLM 智能消息生成配置
 
 ### enable_agent

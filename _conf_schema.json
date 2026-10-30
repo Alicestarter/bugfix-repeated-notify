@@ -29,6 +29,12 @@
     "default": 10,
     "hint": "每分钟允许的最大请求数。设置为 0 表示不限制。"
   },
+  "notify_issue_updates": {
+    "description": "通知 Issue 属性变更",
+    "type": "bool",
+    "default": false,
+    "hint": "创建 Issue 时伴随的标签、类型、自定义字段设置会合并为一条创建通知。开启后，创建完成后的独立属性变更（添加/移除标签、修改类型或字段）也会发送通知；关闭则只通知创建、关闭、重新打开等主要动作。"
+  },
   "enable_agent": {
     "description": "启用 LLM 生成消息",
     "type": "bool",

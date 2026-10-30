@@ -30,13 +30,20 @@ TatsukiMengChen 向 astrbot_plugin_github_webhook 推送了代码
 
 ### Issue 打开
 
+创建 Issue 时，GitHub 会先后发送 `opened`、`labeled`、`typed`、`field_added` 等多个事件。插件会在短暂窗口内合并这些事件，只发送一条创建通知。
+
 **默认模板**：
 ```
 🆕 GitHub Issue Event
 👤 username opened issue in owner/repo
 📋 Issue #42: Bug report
+🏷️ Labels: bug, priority:high
+🧩 Type: Bug
+🔖 Due date: 2026-11-01
 📎 https://github.com/owner/repo/issues/42
 ```
+
+> 标签、类型、自定义字段只有在创建时携带才会显示；没有对应内容的行会自动省略。
 
 **LLM 生成**：
 ```
@@ -63,6 +70,18 @@ TatsukiMengChen 在 owner/repo 创建了新问题
 🔄 GitHub Issue Event
 👤 username reopened issue in owner/repo
 📋 Issue #42: Bug report
+📎 https://github.com/owner/repo/issues/42
+```
+
+### Issue 属性变更
+
+开启 `notify_issue_updates` 后，创建完成后的独立属性变更会单独通知：
+
+```
+📝 GitHub Issue Updated
+👤 username added label on owner/repo
+📋 Issue #42: Bug report
+🔖 Label: bug
 📎 https://github.com/owner/repo/issues/42
 ```
 

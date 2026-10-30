@@ -22,7 +22,7 @@ from src.core.plugin import GitHubWebhookPlugin
     "astrbot_plugin_github_webhook",
     "TatsukiMengChen",
     "GitHub Webhook 集成插件 - 接收 GitHub 事件并转发到聊天平台",
-    "0.4.0",
+    "0.4.2",
 )
 class PluginEntry(Star):
     """插件入口类，代理到实际的 GitHubWebhookPlugin 类"""

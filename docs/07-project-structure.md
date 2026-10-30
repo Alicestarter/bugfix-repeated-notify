@@ -120,7 +120,7 @@ from .config import PluginConfig
 from .plugin import GitHubWebhookPlugin
 
 # 跨层级导入（需要回到 src/）
-from ..handlers.issues_handler import handle_issues_event
+from ..handlers.issues_handler import IssueNotifier
 from ..formatters.push_formatter import format_push_message
 from ..utils.rate_limiter import RateLimiter
 from ..services.llm_service import send_with_agent

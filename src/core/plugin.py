@@ -10,7 +10,7 @@ from astrbot.api import logger
 
 from .config import PluginConfig
 from .constants import DEFAULT_PORT
-from ..handlers.issues_handler import handle_issues_event
+from ..handlers.issues_handler import IssueNotifier
 from ..handlers.pull_request_handler import handle_pull_request_event
 from ..handlers.push_handler import handle_push_event
 from ..utils.rate_limiter import RateLimiter
@@ -27,6 +27,7 @@ class GitHubWebhookPlugin(Star):
         self.runner = None
         self.site = None
         self.cfg = PluginConfig(config)
+        self.issue_notifier = IssueNotifier(self)
 
         if self.cfg.rate_limit > 0:
             self.rate_limiter = RateLimiter(max_requests=self.cfg.rate_limit)
@@ -100,7 +101,7 @@ class GitHubWebhookPlugin(Star):
             if event_type == "push":
                 message = await handle_push_event(data, self.context)
             elif event_type == "issues":
-                message = await handle_issues_event(data, self.context)
+                message = await self.issue_notifier.handle(data)
             elif event_type == "pull_request":
                 message = await handle_pull_request_event(data, self.context)
             else:
@@ -110,14 +111,18 @@ class GitHubWebhookPlugin(Star):
             return web.Response(status=500, text="Internal server error")
 
         if message:
-            if self.cfg.enable_agent:
-                from ..services.llm_service import send_with_agent
-
-                await send_with_agent(self, message, data, event_type)
-            else:
-                await self.send_message(message)
+            await self.dispatch_message(message, data, event_type)
 
         return web.Response(status=200, text="OK")
+
+    async def dispatch_message(self, message: str, data: dict, event_type: str):
+        """Send a formatted message, optionally passing it through the LLM."""
+        if self.cfg.enable_agent:
+            from ..services.llm_service import send_with_agent
+
+            await send_with_agent(self, message, data, event_type)
+        else:
+            await self.send_message(message)
 
     async def send_message(self, message: str):
         if not self.cfg.target_umo:
@@ -144,6 +149,7 @@ class GitHubWebhookPlugin(Star):
 
     async def terminate(self):
         logger.info("GitHub Webhook: Shutting down server...")
+        await self.issue_notifier.shutdown()
         if self.site:
             await self.site.stop()
             logger.info("GitHub Webhook: Server stopped")
