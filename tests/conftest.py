@@ -10,6 +10,7 @@ if importlib.util.find_spec("astrbot") is None:
     astrbot = ModuleType("astrbot")
     api = ModuleType("astrbot.api")
     star = ModuleType("astrbot.api.star")
+    event = ModuleType("astrbot.api.event")
     components = ModuleType("astrbot.api.message_components")
     all_api = ModuleType("astrbot.api.all")
 
@@ -26,6 +27,10 @@ if importlib.util.find_spec("astrbot") is None:
     api.all = all_api
     star.Context = object
     star.Star = Star
+    star.register = lambda *args, **kwargs: lambda cls: cls
+    event.AstrMessageEvent = object
+    event.filter = ModuleType("astrbot.api.event.filter")
+    event.filter.command = lambda *args, **kwargs: lambda handler: handler
     components.Plain = Plain
     all_api.MessageChain = list
     astrbot.api = api
@@ -34,6 +39,7 @@ if importlib.util.find_spec("astrbot") is None:
         "astrbot": astrbot,
         "astrbot.api": api,
         "astrbot.api.star": star,
+        "astrbot.api.event": event,
         "astrbot.api.message_components": components,
         "astrbot.api.all": all_api,
     })

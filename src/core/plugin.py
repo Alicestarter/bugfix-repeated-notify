@@ -9,11 +9,9 @@ from astrbot.api.star import Context, Star
 from astrbot.api import logger
 
 from .config import PluginConfig
-from .constants import DEFAULT_PORT
-from ..handlers.issues_handler import IssueNotifier
 from .constants import EVENT_TYPE_FORK
 from ..handlers.fork_handler import handle_fork_event
-from ..handlers.issues_handler import handle_issues_event
+from ..handlers.issues_handler import IssueNotifier
 from ..handlers.pull_request_handler import handle_pull_request_event
 from ..handlers.push_handler import handle_push_event
 from ..handlers.repository_handler import handle_repository_event
