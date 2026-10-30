@@ -9,6 +9,7 @@ from aiohttp import web
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api import all as api
+from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
 
@@ -42,3 +43,8 @@ class PluginEntry(Star):
     async def terminate(self):
         """插件销毁"""
         await self._plugin.terminate()
+
+    @filter.command("github_forks")
+    async def github_forks(self, event: AstrMessageEvent):
+        """查询 GitHub 仓库的总 Fork 数"""
+        yield await self._plugin.query_forks(event)

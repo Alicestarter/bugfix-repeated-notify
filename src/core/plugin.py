@@ -11,8 +11,13 @@ from astrbot.api import logger
 from .config import PluginConfig
 from .constants import DEFAULT_PORT
 from ..handlers.issues_handler import IssueNotifier
+from .constants import EVENT_TYPE_FORK
+from ..handlers.fork_handler import handle_fork_event
+from ..handlers.issues_handler import handle_issues_event
 from ..handlers.pull_request_handler import handle_pull_request_event
 from ..handlers.push_handler import handle_push_event
+from ..handlers.repository_handler import handle_repository_event
+from ..services.github_api import GitHubAPI
 from ..utils.rate_limiter import RateLimiter
 from ..utils.verify_signature import verify_signature
 
@@ -28,6 +33,8 @@ class GitHubWebhookPlugin(Star):
         self.site = None
         self.cfg = PluginConfig(config)
         self.issue_notifier = IssueNotifier(self)
+        self.last_source_repo = None
+        self.github_api = GitHubAPI(self.cfg.github_token)
 
         if self.cfg.rate_limit > 0:
             self.rate_limiter = RateLimiter(max_requests=self.cfg.rate_limit)
@@ -95,6 +102,12 @@ class GitHubWebhookPlugin(Star):
         if event_type == "ping":
             return web.Response(text="Pong")
 
+        # Remember source repository for the /github_forks command
+        if isinstance(data, dict):
+            repo_full_name = data.get("repository", {}).get("full_name")
+            if repo_full_name:
+                self.last_source_repo = repo_full_name
+
         message = None
 
         try:
@@ -104,6 +117,10 @@ class GitHubWebhookPlugin(Star):
                 message = await self.issue_notifier.handle(data)
             elif event_type == "pull_request":
                 message = await handle_pull_request_event(data, self.context)
+            elif event_type == EVENT_TYPE_FORK:
+                message = await handle_fork_event(data, self.context)
+            elif event_type == "repository":
+                message = await handle_repository_event(data, self.context)
             else:
                 logger.info(f"GitHub Webhook: Event type '{event_type}' not handled")
         except Exception as e:
@@ -147,9 +164,29 @@ class GitHubWebhookPlugin(Star):
             logger.error(f"GitHub Webhook: Error type: {type(e).__name__}")
             logger.error(f"GitHub Webhook: Error details: {str(e)}")
 
+    async def query_forks(self, event):
+        """Handler for the /github_forks command: query total fork count."""
+        repo = self.last_source_repo
+        if not repo:
+            return event.plain_result(
+                "GitHub Webhook: 尚未收到 GitHub 事件，无法确定要查询的仓库"
+            )
+
+        info = await self.github_api.get_repo(repo)
+        if info is None:
+            return event.plain_result(
+                f"GitHub Webhook: 查询失败，仓库 {repo} 不存在或 API 请求受限"
+            )
+
+        forks = info.get("forks_count", 0)
+        return event.plain_result(
+            f"📊 GitHub Fork Stats\n🍴 Repo: {repo}\n📈 Total forks: {forks}"
+        )
+
     async def terminate(self):
         logger.info("GitHub Webhook: Shutting down server...")
         await self.issue_notifier.shutdown()
+        await self.github_api.close()
         if self.site:
             await self.site.stop()
             logger.info("GitHub Webhook: Server stopped")

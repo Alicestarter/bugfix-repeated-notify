@@ -51,6 +51,9 @@ class PluginConfig(ConfigNode):
     agent_timeout: int
     agent_system_prompt: str
 
+    # Fork 功能
+    github_token: str
+
     def __init__(self, cfg: AstrBotConfig):
         super().__init__(cfg)
         # 配置验证和完整日志
@@ -99,3 +102,11 @@ class PluginConfig(ConfigNode):
                 logger.info("GitHub Webhook: Custom system prompt configured")
         else:
             logger.info("GitHub Webhook: LLM mode disabled, using default templates")
+
+        if self.github_token:
+            logger.info("GitHub Webhook: GitHub token configured")
+        else:
+            logger.warning(
+                "GitHub Webhook: No github_token configured, "
+                "Fork stats query uses unauthenticated API (60 req/hour)"
+            )
